@@ -10,6 +10,11 @@ import { getDiscordClient } from "./lib/discord-bot.js";
 
 const app: Express = express();
 
+// --- Добавлено для Railway Healthcheck ---
+app.get("/healthz", (_req, res) => {
+  res.status(200).send("OK");
+});
+
 app.use(
   pinoHttp({
     logger,
@@ -52,6 +57,8 @@ if (process.env.NODE_ENV === "production") {
   const __dirname = path.dirname(fileURLToPath(import.meta.url));
   const staticDir = path.resolve(__dirname, "../../court-app/dist/public");
   app.use(express.static(staticDir));
+  
+  // Оставляем твой правильный маршрут для SPA
   app.get("{*path}", (_req, res) => {
     res.sendFile(path.join(staticDir, "index.html"));
   });
