@@ -1,5 +1,7 @@
 import { Client, GatewayIntentBits, ActionRowBuilder, ButtonBuilder, ButtonStyle, EmbedBuilder, Events } from "discord.js";
 import { logger } from "./logger.js";
+import { db, approvedUsersTable } from "@workspace/db";
+import { eq } from "drizzle-orm";
 
 export type ApprovalStatus = "pending" | "approved" | "rejected";
 
@@ -22,11 +24,42 @@ export function getDiscordClient(): Client {
   if (!client) {
     client = new Client({ intents: [GatewayIntentBits.Guilds] });
 
-    client.once(Events.ClientReady, (c) => {
+    client.once(Events.ClientReady, async (c) => {
       logger.info({ tag: c.user.tag }, "Discord bot ready");
+      try {
+        await c.application.commands.create({
+          name: "revoke",
+          description: "Забрать доступ к сайту у пользователя",
+          options: [{
+            name: "user",
+            description: "Пользователь, у которого нужно забрать доступ",
+            type: 6, // USER type
+            required: true
+          }]
+        });
+      } catch (err) {
+        logger.error({ err }, "Failed to register commands");
+      }
     });
 
     client.on(Events.InteractionCreate, async (interaction) => {
+      if (interaction.isChatInputCommand()) {
+        if (interaction.commandName === "revoke") {
+          const targetUser = interaction.options.getUser("user");
+          if (!targetUser) return;
+          try {
+            await db.update(approvedUsersTable)
+              .set({ approved: false })
+              .where(eq(approvedUsersTable.discordId, targetUser.id));
+            await interaction.reply({ content: `✅ Доступ для пользователя ${targetUser.tag} успешно отозван.`, ephemeral: true });
+          } catch (err) {
+            logger.error({ err }, "Failed to revoke user");
+            await interaction.reply({ content: "❌ Ошибка при отзыве доступа.", ephemeral: true });
+          }
+        }
+        return;
+      }
+
       if (!interaction.isButton()) return;
 
       const [action, token] = interaction.customId.split(":");
