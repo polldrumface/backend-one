@@ -20,9 +20,6 @@ function getRedirectUri(req: any): string {
 }
 
 function getFrontendUrl(): string {
-  if (process.env.NODE_ENV === "production") {
-    return ""; // In production, frontend is served by the backend
-  }
   return process.env.FRONTEND_URL || "http://localhost:3000";
 }
 
