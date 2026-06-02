@@ -19,6 +19,13 @@ function getRedirectUri(req: any): string {
   return `${host}/api/auth/discord/callback`;
 }
 
+function getFrontendUrl(): string {
+  if (process.env.NODE_ENV === "production") {
+    return ""; // In production, frontend is served by the backend
+  }
+  return process.env.FRONTEND_URL || "http://localhost:3000";
+}
+
 router.get("/discord", (req, res) => {
   const state = crypto.randomBytes(16).toString("hex");
   req.session.oauthState = state;
@@ -39,7 +46,7 @@ router.get("/discord/callback", async (req, res) => {
   const { code, state } = req.query as { code?: string; state?: string };
 
   if (!code || !state || state !== req.session.oauthState) {
-    return res.redirect("/?error=invalid_state");
+    return res.redirect(`${getFrontendUrl()}/?error=invalid_state`);
   }
 
   delete req.session.oauthState;
@@ -62,7 +69,7 @@ router.get("/discord/callback", async (req, res) => {
     if (!tokenRes.ok) {
       const err = await tokenRes.text();
       req.log.error({ err }, "Discord token exchange failed");
-      return res.redirect("/?error=token_failed");
+      return res.redirect(`${getFrontendUrl()}/?error=token_failed`);
     }
 
     const tokenData = await tokenRes.json() as { access_token: string };
@@ -72,7 +79,7 @@ router.get("/discord/callback", async (req, res) => {
     });
 
     if (!userRes.ok) {
-      return res.redirect("/?error=user_fetch_failed");
+      return res.redirect(`${getFrontendUrl()}/?error=user_fetch_failed`);
     }
 
     const discordUser = await userRes.json() as {
@@ -98,7 +105,7 @@ router.get("/discord/callback", async (req, res) => {
         approvalStatus: "approved",
       };
       await req.session.save();
-      return res.redirect("/app");
+      return res.redirect(`${getFrontendUrl()}/app`);
     }
 
     const approvalToken = crypto.randomBytes(32).toString("hex");
@@ -151,10 +158,10 @@ router.get("/discord/callback", async (req, res) => {
       }
     });
 
-    return res.redirect(`/pending?token=${approvalToken}`);
+    return res.redirect(`${getFrontendUrl()}/pending?token=${approvalToken}`);
   } catch (err) {
     req.log.error({ err }, "Discord callback error");
-    return res.redirect("/?error=server_error");
+    return res.redirect(`${getFrontendUrl()}/?error=server_error`);
   }
 });
 
