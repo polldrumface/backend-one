@@ -162,11 +162,33 @@ router.get("/discord/callback", async (req, res) => {
   }
 });
 
-router.get("/me", (req, res) => {
+router.get("/me", async (req, res) => {
   if (!req.session.user) {
     return res.status(401).json({ error: "Not authenticated" });
   }
   const u = req.session.user;
+
+  try {
+    const existing = await db.select()
+      .from(approvedUsersTable)
+      .where(eq(approvedUsersTable.discordId, u.userId))
+      .limit(1);
+
+    if (existing.length === 0 || !existing[0].approved) {
+      if (u.approved) {
+        u.approved = false;
+        await new Promise<void>((resolve) => req.session.save(() => resolve()));
+      }
+    } else {
+      if (!u.approved) {
+        u.approved = true;
+        await new Promise<void>((resolve) => req.session.save(() => resolve()));
+      }
+    }
+  } catch (err) {
+    req.log.error({ err }, "Failed to verify user approval status");
+  }
+
   return res.json({
     id: u.userId,
     username: u.username,

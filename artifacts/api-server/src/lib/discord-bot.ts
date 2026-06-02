@@ -35,7 +35,8 @@ export function getDiscordClient(): Client {
             description: "Пользователь, у которого нужно забрать доступ",
             type: 6, // USER type
             required: true
-          }]
+          }],
+          defaultMemberPermissions: "0"
         });
       } catch (err) {
         logger.error({ err }, "Failed to register commands");
@@ -133,10 +134,19 @@ export async function sendApprovalRequest(
     }, 10 * 60 * 1000);
 
     try {
-      await new Promise<void>((r) => {
-        if (discordClient.isReady()) { r(); return; }
-        discordClient.once(Events.ClientReady, () => r());
-        setTimeout(() => r(), 8000);
+      await new Promise<void>((resolve, reject) => {
+        if (discordClient.isReady()) { resolve(); return; }
+        
+        const onReady = () => {
+          clearTimeout(timer);
+          resolve();
+        };
+        discordClient.once(Events.ClientReady, onReady);
+        
+        const timer = setTimeout(() => {
+          discordClient.off(Events.ClientReady, onReady);
+          reject(new Error("Discord client ready timeout - bot is not logged in"));
+        }, 15000);
       });
 
       const channel = await discordClient.channels.fetch(channelId);
