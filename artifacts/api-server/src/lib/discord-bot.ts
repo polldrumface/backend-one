@@ -1,4 +1,12 @@
-import { Client, GatewayIntentBits, ActionRowBuilder, ButtonBuilder, ButtonStyle, EmbedBuilder, Events } from "discord.js";
+import {
+  Client,
+  GatewayIntentBits,
+  ActionRowBuilder,
+  ButtonBuilder,
+  ButtonStyle,
+  EmbedBuilder,
+  Events,
+} from "discord.js";
 import { logger } from "./logger.js";
 import { db, approvedUsersTable } from "@workspace/db";
 import { eq } from "drizzle-orm";
@@ -30,13 +38,15 @@ export function getDiscordClient(): Client {
         await c.application.commands.create({
           name: "revoke",
           description: "Забрать доступ к сайту у пользователя",
-          options: [{
-            name: "user",
-            description: "Пользователь, у которого нужно забрать доступ",
-            type: 6, // USER type
-            required: true
-          }],
-          defaultMemberPermissions: "0"
+          options: [
+            {
+              name: "user",
+              description: "Пользователь, у которого нужно забрать доступ",
+              type: 6, // USER type
+              required: true,
+            },
+          ],
+          defaultMemberPermissions: "0",
         });
       } catch (err) {
         logger.error({ err }, "Failed to register commands");
@@ -49,13 +59,20 @@ export function getDiscordClient(): Client {
           const targetUser = interaction.options.getUser("user");
           if (!targetUser) return;
           try {
-            await db.update(approvedUsersTable)
+            await db
+              .update(approvedUsersTable)
               .set({ approved: false })
               .where(eq(approvedUsersTable.discordId, targetUser.id));
-            await interaction.reply({ content: `✅ Доступ для пользователя ${targetUser.tag} успешно отозван.`, ephemeral: true });
+            await interaction.reply({
+              content: `✅ Доступ для пользователя ${targetUser.tag} успешно отозван.`,
+              ephemeral: true,
+            });
           } catch (err) {
             logger.error({ err }, "Failed to revoke user");
-            await interaction.reply({ content: "❌ Ошибка при отзыве доступа.", ephemeral: true });
+            await interaction.reply({
+              content: "❌ Ошибка при отзыве доступа.",
+              ephemeral: true,
+            });
           }
         }
         return;
@@ -68,15 +85,20 @@ export function getDiscordClient(): Client {
 
       const request = pendingRequests.get(token);
       if (!request) {
-        await interaction.reply({ content: "Этот запрос уже обработан или истёк.", ephemeral: true });
+        await interaction.reply({
+          content: "Этот запрос уже обработан или истёк.",
+          ephemeral: true,
+        });
         return;
       }
 
-      const status: ApprovalStatus = action === "approve" ? "approved" : "rejected";
+      const status: ApprovalStatus =
+        action === "approve" ? "approved" : "rejected";
       request.resolve(status);
       pendingRequests.delete(token);
 
-      const statusText = status === "approved" ? "Доступ выдан" : "Доступ отклонён";
+      const statusText =
+        status === "approved" ? "Доступ выдан" : "Доступ отклонён";
       const color = status === "approved" ? 0x57f287 : 0xed4245;
 
       const embed = new EmbedBuilder()
@@ -103,15 +125,32 @@ export function getDiscordClient(): Client {
 
 export async function sendApprovalRequest(
   token: string,
-  user: { id: string; username: string; discriminator: string; avatar: string | null }
+  user: {
+    id: string;
+    username: string;
+    discriminator: string;
+    avatar: string | null;
+  },
 ): Promise<ApprovalStatus> {
   const channelId = process.env.DISCORD_APPROVAL_CHANNEL_ID;
   if (!channelId) {
-    logger.error("DISCORD_APPROVAL_CHANNEL_ID not set");
+    logger.error("DISCORD_APPROVAL_CHANNEL_ID not set — auto-rejecting");
     return "rejected";
   }
 
-  const discordClient = getDiscordClient();
+  let discordClient: Client;
+  try {
+    discordClient = getDiscordClient();
+  } catch (err) {
+    logger.error({ err }, "getDiscordClient threw — auto-rejecting");
+    return "rejected";
+  }
+
+  // If bot token is not set the client will never be ready — reject immediately
+  if (!process.env.DISCORD_BOT_TOKEN) {
+    logger.warn("DISCORD_BOT_TOKEN not set — auto-rejecting approval request");
+    return "rejected";
+  }
 
   return new Promise<ApprovalStatus>(async (resolve) => {
     const expiresAt = Date.now() + 10 * 60 * 1000;
@@ -134,18 +173,22 @@ export async function sendApprovalRequest(
     }, 10 * 60 * 1000);
 
     try {
-      await new Promise<void>((resolve, reject) => {
-        if (discordClient.isReady()) { resolve(); return; }
-        
+      // Wait for bot to be ready (with timeout)
+      await new Promise<void>((res, rej) => {
+        if (discordClient.isReady()) {
+          res();
+          return;
+        }
+
         const onReady = () => {
           clearTimeout(timer);
-          resolve();
+          res();
         };
         discordClient.once(Events.ClientReady, onReady);
-        
+
         const timer = setTimeout(() => {
           discordClient.off(Events.ClientReady, onReady);
-          reject(new Error("Discord client ready timeout - bot is not logged in"));
+          rej(new Error("Discord client ready timeout — bot may not be logged in"));
         }, 15000);
       });
 
@@ -163,10 +206,12 @@ export async function sendApprovalRequest(
 
       const embed = new EmbedBuilder()
         .setTitle("Запрос на доступ")
-        .setDescription(`Пользователь **${user.username}** хочет войти на сайт судебной коллегии Winslow.`)
+        .setDescription(
+          `Пользователь **${user.username}** хочет войти на сайт судебной коллегии Winslow.`,
+        )
         .addFields(
           { name: "Discord ID", value: user.id, inline: true },
-          { name: "Пользователь", value: `${user.username}`, inline: true }
+          { name: "Пользователь", value: `${user.username}`, inline: true },
         )
         .setThumbnail(avatarUrl)
         .setColor(0xfaa61a)
@@ -181,7 +226,7 @@ export async function sendApprovalRequest(
         new ButtonBuilder()
           .setCustomId(`reject:${token}`)
           .setLabel("Отклонить")
-          .setStyle(ButtonStyle.Danger)
+          .setStyle(ButtonStyle.Danger),
       );
 
       const msg = await (channel as any).send({ embeds: [embed], components: [row] });
@@ -193,7 +238,7 @@ export async function sendApprovalRequest(
 
       logger.info({ token, userId: user.id }, "Approval request sent to Discord");
     } catch (err) {
-      logger.error({ err }, "Failed to send approval request");
+      logger.error({ err }, "Failed to send approval request — auto-rejecting");
       pendingRequests.delete(token);
       resolve("rejected");
     }
