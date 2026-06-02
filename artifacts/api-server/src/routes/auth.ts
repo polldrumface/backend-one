@@ -10,13 +10,16 @@ const router = Router();
 const DISCORD_CLIENT_ID = process.env.DISCORD_CLIENT_ID!;
 const DISCORD_CLIENT_SECRET = process.env.DISCORD_CLIENT_SECRET!;
 
-function getRedirectUri(req: any): string {
-  const host = process.env.RAILWAY_PUBLIC_DOMAIN
-    ? `https://${process.env.RAILWAY_PUBLIC_DOMAIN}`
-    : process.env.REPLIT_DOMAINS
-      ? `https://${process.env.REPLIT_DOMAINS.split(",")[0]}`
-      : `http://localhost:${process.env.PORT || 5000}`;
-  return `${host}/api/auth/discord/callback`;
+function getRedirectUri(): string {
+  // BACKEND_URL must be explicitly set in Railway env vars
+  if (process.env.BACKEND_URL) {
+    const host = process.env.BACKEND_URL.startsWith("http")
+      ? process.env.BACKEND_URL
+      : `https://${process.env.BACKEND_URL}`;
+    return `${host}/api/auth/discord/callback`;
+  }
+  // fallback for local dev
+  return `http://localhost:${process.env.PORT || 5000}/api/auth/discord/callback`;
 }
 
 function getFrontendUrl(): string {
@@ -27,7 +30,7 @@ router.get("/discord", (req, res) => {
   const state = crypto.randomBytes(16).toString("hex");
   req.session.oauthState = state;
 
-  const redirectUri = getRedirectUri(req);
+  const redirectUri = getRedirectUri();
   const params = new URLSearchParams({
     client_id: DISCORD_CLIENT_ID,
     redirect_uri: redirectUri,
@@ -48,8 +51,24 @@ router.get("/discord/callback", async (req, res) => {
 
   delete req.session.oauthState;
 
+  // Save session after clearing state before doing any async work
   try {
-    const redirectUri = getRedirectUri(req);
+    await new Promise<void>((resolve, reject) =>
+      req.session.save((err) => (err ? reject(err) : resolve()))
+    );
+  } catch (_) {
+    // non-fatal: session will still work
+  }
+
+  let discordUser: {
+    id: string;
+    username: string;
+    discriminator: string;
+    avatar: string | null;
+  };
+
+  try {
+    const redirectUri = getRedirectUri();
 
     const tokenRes = await fetch("https://discord.com/api/oauth2/token", {
       method: "POST",
@@ -69,7 +88,7 @@ router.get("/discord/callback", async (req, res) => {
       return res.redirect(`${getFrontendUrl()}/?error=token_failed`);
     }
 
-    const tokenData = await tokenRes.json() as { access_token: string };
+    const tokenData = (await tokenRes.json()) as { access_token: string };
 
     const userRes = await fetch("https://discord.com/api/users/@me", {
       headers: { Authorization: `Bearer ${tokenData.access_token}` },
@@ -79,15 +98,21 @@ router.get("/discord/callback", async (req, res) => {
       return res.redirect(`${getFrontendUrl()}/?error=user_fetch_failed`);
     }
 
-    const discordUser = await userRes.json() as {
+    discordUser = (await userRes.json()) as {
       id: string;
       username: string;
       discriminator: string;
       avatar: string | null;
     };
+  } catch (err) {
+    req.log.error({ err }, "Discord OAuth error");
+    return res.redirect(`${getFrontendUrl()}/?error=discord_unavailable`);
+  }
 
-    // Check if user was previously approved
-    const existing = await db.select()
+  // DB operations in their own try/catch
+  try {
+    const existing = await db
+      .select()
       .from(approvedUsersTable)
       .where(eq(approvedUsersTable.discordId, discordUser.id))
       .limit(1);
@@ -101,7 +126,9 @@ router.get("/discord/callback", async (req, res) => {
         approved: true,
         approvalStatus: "approved",
       };
-      await req.session.save();
+      await new Promise<void>((resolve, reject) =>
+        req.session.save((err) => (err ? reject(err) : resolve()))
+      );
       return res.redirect(`${getFrontendUrl()}/app`);
     }
 
@@ -118,9 +145,12 @@ router.get("/discord/callback", async (req, res) => {
     };
     req.session.approvalToken = approvalToken;
 
-    await req.session.save();
+    await new Promise<void>((resolve, reject) =>
+      req.session.save((err) => (err ? reject(err) : resolve()))
+    );
 
-    await db.insert(approvedUsersTable)
+    await db
+      .insert(approvedUsersTable)
       .values({
         discordId: discordUser.id,
         username: discordUser.username,
@@ -137,27 +167,46 @@ router.get("/discord/callback", async (req, res) => {
         },
       });
 
-    sendApprovalRequest(approvalToken, {
-      id: discordUser.id,
-      username: discordUser.username,
-      discriminator: discordUser.discriminator,
-      avatar: discordUser.avatar,
-    }).then(async (status) => {
-      if (status === "approved") {
-        await db.update(approvedUsersTable)
-          .set({ approved: true, approvedAt: new Date() })
-          .where(eq(approvedUsersTable.discordId, discordUser.id));
-      }
-      if (req.session.user && req.session.user.approvalToken === approvalToken) {
-        req.session.user.approvalStatus = status;
-        req.session.user.approved = status === "approved";
-        req.session.save();
-      }
-    });
+    // Fire-and-forget approval request — must NOT block the redirect
+    // and must NOT throw into the outer try/catch
+    Promise.resolve()
+      .then(() =>
+        sendApprovalRequest(approvalToken, {
+          id: discordUser.id,
+          username: discordUser.username,
+          discriminator: discordUser.discriminator,
+          avatar: discordUser.avatar,
+        })
+      )
+      .then(async (status) => {
+        try {
+          if (status === "approved") {
+            await db
+              .update(approvedUsersTable)
+              .set({ approved: true, approvedAt: new Date() })
+              .where(eq(approvedUsersTable.discordId, discordUser.id));
+          }
+          if (
+            req.session.user &&
+            req.session.user.approvalToken === approvalToken
+          ) {
+            req.session.user.approvalStatus = status;
+            req.session.user.approved = status === "approved";
+            await new Promise<void>((resolve) =>
+              req.session.save(() => resolve())
+            );
+          }
+        } catch (err) {
+          req.log.error({ err }, "Failed to persist approval status");
+        }
+      })
+      .catch((err) => {
+        req.log.error({ err }, "sendApprovalRequest failed");
+      });
 
     return res.redirect(`${getFrontendUrl()}/pending?token=${approvalToken}`);
   } catch (err) {
-    req.log.error({ err }, "Discord callback error");
+    req.log.error({ err }, "Discord callback DB error");
     return res.redirect(`${getFrontendUrl()}/?error=server_error`);
   }
 });
@@ -169,7 +218,8 @@ router.get("/me", async (req, res) => {
   const u = req.session.user;
 
   try {
-    const existing = await db.select()
+    const existing = await db
+      .select()
       .from(approvedUsersTable)
       .where(eq(approvedUsersTable.discordId, u.userId))
       .limit(1);
