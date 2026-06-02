@@ -11,7 +11,7 @@ import { getDiscordClient } from "./lib/discord-bot.js";
 const app: Express = express();
 app.set("trust proxy", 1);
 
-// --- Добавлено для Railway Healthcheck ---
+// /healthz for pre-router healthchecks; /api/healthz handled by router below
 app.get("/healthz", (_req, res) => {
   res.status(200).send("OK");
 });
@@ -30,36 +30,65 @@ app.use(
   }),
 );
 
-app.use(cors({
-  origin: true,
-  credentials: true,
-}));
+// CORS: allow only the known frontend origin with credentials
+const allowedOrigins = [
+  process.env.FRONTEND_URL,
+  "http://localhost:3000",
+].filter(Boolean) as string[];
+
+app.use(
+  cors({
+    origin: (origin, callback) => {
+      // allow same-origin / server-to-server (no origin header)
+      if (!origin) return callback(null, true);
+      if (allowedOrigins.some((o) => origin.startsWith(o))) {
+        return callback(null, true);
+      }
+      callback(new Error(`CORS: origin ${origin} not allowed`));
+    },
+    credentials: true,
+  }),
+);
+
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
+if (!process.env.SESSION_SECRET) {
+  logger.warn("SESSION_SECRET is not set — using insecure fallback. Set it in Railway env vars!");
+}
 const sessionSecret = process.env.SESSION_SECRET || "winslow-court-secret-fallback";
-app.use(session({
-  secret: sessionSecret,
-  resave: false,
-  saveUninitialized: false,
-  cookie: {
-    httpOnly: true,
-    secure: process.env.NODE_ENV === "production",
-    maxAge: 7 * 24 * 60 * 60 * 1000,
-    sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
-  },
-}));
 
-getDiscordClient();
+const isProd = process.env.NODE_ENV === "production";
+
+app.use(
+  session({
+    secret: sessionSecret,
+    resave: false,
+    saveUninitialized: false,
+    cookie: {
+      httpOnly: true,
+      secure: isProd,          // requires HTTPS in prod
+      maxAge: 7 * 24 * 60 * 60 * 1000,
+      // "none" is required when frontend and backend are on different domains
+      sameSite: isProd ? "none" : "lax",
+    },
+  }),
+);
+
+// Init Discord bot (non-fatal if token missing)
+try {
+  getDiscordClient();
+} catch (err) {
+  logger.error({ err }, "Failed to initialise Discord client");
+}
 
 app.use("/api", router);
 
-if (process.env.NODE_ENV === "production") {
+if (isProd) {
   const __dirname = path.dirname(fileURLToPath(import.meta.url));
   const staticDir = path.resolve(__dirname, "../../court-app/dist/public");
   app.use(express.static(staticDir));
-  
-  // Оставляем твой правильный маршрут для SPA
+
   app.get("{*path}", (_req, res) => {
     res.sendFile(path.join(staticDir, "index.html"));
   });
